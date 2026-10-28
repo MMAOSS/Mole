@@ -401,6 +401,105 @@ EOF
     [[ "$output" != *"UNEXPECTED_CLEAN"* ]]
 }
 
+@test "clean_xcode_tools removes per-device simulator data whole, only on shut-down devices" {
+    local fixture_home="$HOME/simulator-device-leaves"
+    run env HOME="$fixture_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+devices="$HOME/Library/Developer/CoreSimulator/Devices"
+make_device() {
+    mkdir -p "$devices/$1"
+    /usr/bin/plutil -create xml1 "$devices/$1/device.plist"
+    [[ -z "$2" ]] || /usr/bin/plutil -insert state -integer "$2" "$devices/$1/device.plist"
+}
+make_device OFF 1
+make_device BOOTED 3
+make_device UNKNOWN ""
+make_device GONE 1
+/usr/bin/plutil -insert isDeleted -bool true "$devices/GONE/device.plist"
+store="$devices/OFF/data/Library/Application Support/PRBPosterExtensionDataStore"
+mkdir -p "$store/descriptors" "$store/staticdescriptors" "$store/configurations"
+touch "$store/staticdescriptors/render.heic"
+mkdir -p "$devices/OFF/data/Library/Application Support/FileProvider"
+touch "$devices/OFF/data/Library/Application Support/FileProvider/keep.db"
+mkdir -p "$devices/OFF/data/Library/Caches/com.apple.Maps"
+mkdir -p "$devices/OFF/data/private/var/MobileAsset/AssetsV2/com_apple_MobileAsset_Font"
+mkdir -p "$devices/OFF/data/var/db/diagnostics"
+for other in BOOTED UNKNOWN GONE; do
+    mkdir -p "$devices/$other/data/Library/Caches/com.apple.Maps"
+done
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+running=false
+pgrep() { [[ "$running" == "true" && "$*" == *Simulator* ]]; }
+safe_clean() { printf '%s\n' "$@" >> "$HOME/clean-trace"; }
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+mole_defer_cleanup_family() { printf 'deferred %s\n' "$1" >> "$HOME/clean-trace"; }
+
+running=true
+clean_xcode_tools
+! grep -q "PRBPosterExtensionDataStore\|/data/Library/Caches" "$HOME/clean-trace" || exit 1
+
+: > "$HOME/clean-trace"
+running=false
+clean_xcode_tools
+trace="$HOME/clean-trace"
+grep -qxF "$store" "$trace" || exit 2
+grep -qxF "$devices/OFF/data/Library/Caches" "$trace" || exit 3
+grep -qxF "$devices/OFF/data/private/var/MobileAsset/AssetsV2" "$trace" || exit 4
+# The store goes whole, never as its gallery descriptors; its siblings stay.
+! grep -q "PRBPosterExtensionDataStore/" "$trace" || exit 5
+! grep -q "FileProvider" "$trace" || exit 6
+# An empty leaf is not listed, and only a shut-down, undeleted device counts.
+! grep -q "var/db/diagnostics" "$trace" || exit 7
+! grep -q "/BOOTED/\|/UNKNOWN/\|/GONE/" "$trace" || exit 8
+printf 'PASS\n'
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"PASS"* ]]
+}
+
+@test "simulator device leaves refuse links on the way and recheck the device before deleting" {
+    local fixture_home="$HOME/simulator-device-guard"
+    run env HOME="$fixture_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+devices="$HOME/Library/Developer/CoreSimulator/Devices"
+for device in OFF LINKED; do
+    mkdir -p "$devices/$device"
+    /usr/bin/plutil -create xml1 "$devices/$device/device.plist"
+    /usr/bin/plutil -insert state -integer 1 "$devices/$device/device.plist"
+done
+mkdir -p "$devices/OFF/data/Library/Caches/com.apple.Maps"
+mkdir -p "$HOME/elsewhere/Library/Caches/keep"
+mkdir -p "$devices/LINKED/data"
+ln -s "$HOME/elsewhere/Library" "$devices/LINKED/data/Library"
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+pgrep() { return 1; }
+
+listed=$(_simulator_device_leaf_targets)
+[[ "$listed" == "$devices/OFF/data/Library/Caches" ]] || exit 1
+
+leaf="$devices/OFF/data/Library/Caches"
+_simulator_device_leaf_delete_guard_allows "$leaf" || exit 2
+# The device booted after the scan: only this leaf is skipped.
+/usr/bin/plutil -replace state -integer 3 "$devices/OFF/device.plist"
+rc=0
+_simulator_device_leaf_delete_guard_allows "$leaf" || rc=$?
+[[ $rc -ne 0 && "$_MOLE_SAFE_CLEAN_SKIP_PATH" == "$leaf" ]] || exit 3
+# A path outside the listed leaves is never accepted.
+/usr/bin/plutil -replace state -integer 1 "$devices/OFF/device.plist"
+mkdir -p "$devices/OFF/data/Documents"
+! _simulator_device_leaf_is_eligible "$devices/OFF/data/Documents" || exit 4
+printf 'PASS\n'
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"PASS"* ]]
+}
+
 @test "clean_xcode_tools does not duplicate unavailable simulator cleanup" {
     run grep -n "simctl" "$PROJECT_ROOT/lib/clean/app_caches.sh"
 

@@ -58,9 +58,86 @@ _simulator_app_cache_delete_guard_allows() {
     mole_clean_process_guard _simulator_cleanup_process_state "Simulator or CoreSimulator running"
 }
 
+# Per-device leaves Mole Mac removes whole, only on a device whose
+# device.plist reads shut down (state 1) and not deleted; an unreadable
+# plist is unknown, so its device is left alone. The poster store is only
+# ever removed whole: with it gone the next boot rebuilds it as a new device
+# does, while removing only its gallery descriptors left `staticdescriptors`
+# empty and the gallery failing to render (iOS 27.1, 2026-10-28). Empty
+# leaves are not listed, so an idle Mac reports nothing.
+_SIMULATOR_DEVICE_LEAVES=(
+    "data/private/var/MobileAsset/AssetsV2"
+    "data/var/db/diagnostics"
+    "data/var/db/uuidtext"
+    "data/Library/Caches"
+    "data/Library/Application Support/PRBPosterExtensionDataStore"
+)
+
+_simulator_device_is_shut_down() {
+    local plist="$1/device.plist"
+    [[ -f "$plist" ]] || return 1
+    local state="" deleted=""
+    state=$(run_with_timeout 2 /usr/bin/plutil -extract state raw -o - "$plist" 2> /dev/null) || return 1
+    [[ "$state" == "1" ]] || return 1
+    deleted=$(run_with_timeout 2 /usr/bin/plutil -extract isDeleted raw -o - "$plist" 2> /dev/null) || deleted=""
+    [[ "$deleted" != "true" ]]
+}
+
+# A leaf qualifies only at its listed place under the Devices root, with no
+# link anywhere between the device folder and the leaf, on a shut-down device.
+_simulator_device_leaf_is_eligible() {
+    local path="$1"
+    local devices_root="$HOME/Library/Developer/CoreSimulator/Devices"
+    local device="${path%%/data/*}"
+    local leaf="${path#"$device"/}"
+    [[ "$device" != "$path" && "${device%/*}" == "$devices_root" ]] || return 1
+    [[ -d "$device" && ! -L "$device" && -d "$path" && ! -L "$path" ]] || return 1
+    local known="" candidate
+    for candidate in "${_SIMULATOR_DEVICE_LEAVES[@]}"; do
+        [[ "$leaf" == "$candidate" ]] && known=1
+    done
+    [[ -n "$known" ]] || return 1
+    local device_physical="" leaf_physical=""
+    device_physical=$(cd "$device" 2> /dev/null && pwd -P) || return 1
+    leaf_physical=$(cd "$path" 2> /dev/null && pwd -P) || return 1
+    [[ "$leaf_physical" == "$device_physical/$leaf" ]] || return 1
+    _simulator_device_is_shut_down "$device"
+}
+
+# Prints one existing, non-empty leaf per line.
+_simulator_device_leaf_targets() {
+    local devices_root="$HOME/Library/Developer/CoreSimulator/Devices"
+    [[ -d "$devices_root" ]] || return 0
+    local device leaf target
+    for device in "$devices_root"/*; do
+        [[ -d "$device" && ! -L "$device" ]] || continue
+        _simulator_device_is_shut_down "$device" || continue
+        for leaf in "${_SIMULATOR_DEVICE_LEAVES[@]}"; do
+            target="$device/$leaf"
+            [[ -n "$(find "$target" -mindepth 1 -maxdepth 1 -print -quit 2> /dev/null)" ]] || continue
+            _simulator_device_leaf_is_eligible "$target" || continue
+            printf '%s\n' "$target"
+        done
+    done
+}
+
+# Delete-time callback: the simulator probe first, whose refusal stops the
+# batch, then this leaf's own device read again, whose refusal skips only it.
+_simulator_device_leaf_delete_guard_allows() {
+    local path="${1:-}"
+    _MOLE_SAFE_CLEAN_SKIP_PATH=""
+    _simulator_app_cache_delete_guard_allows || return 1
+    [[ -n "$path" ]] || return 0
+    _MOLE_SAFE_CLEAN_SKIP_PATH="$path"
+    _MOLE_CLEAN_GUARD_REASON="simulator device no longer shut down"
+    _simulator_device_leaf_is_eligible "$path" || return 1
+    _MOLE_SAFE_CLEAN_SKIP_PATH=""
+    return 0
+}
+
 _defer_app_cache_guard_family() {
     case "$1" in
-        _simulator_app_cache_delete_guard_allows) mole_defer_cleanup_family "Simulator" ;;
+        _simulator_app_cache_delete_guard_allows | _simulator_device_leaf_delete_guard_allows) mole_defer_cleanup_family "Simulator" ;;
         _autodesk_cache_delete_guard_allows) mole_defer_cleanup_family "Autodesk" ;;
         *) mole_defer_cleanup_family "Xcode" ;;
     esac
@@ -261,10 +338,16 @@ clean_xcode_derived_data() {
 # Xcode and iOS tooling.
 clean_xcode_tools() {
     local simulator_has_targets=false
-    if mole_cleanup_targets_exist \
-        "$HOME/Library/Developer/CoreSimulator/Caches"/* \
-        "$HOME/Library/Developer/CoreSimulator/Devices"/*/data/tmp/* \
-        "$HOME/Library/Logs/CoreSimulator"/*; then
+    local -a simulator_device_leaves=()
+    local simulator_leaf
+    while IFS= read -r simulator_leaf; do
+        [[ -n "$simulator_leaf" ]] && simulator_device_leaves+=("$simulator_leaf")
+    done < <(_simulator_device_leaf_targets)
+    if [[ ${#simulator_device_leaves[@]} -gt 0 ]] ||
+        mole_cleanup_targets_exist \
+            "$HOME/Library/Developer/CoreSimulator/Caches"/* \
+            "$HOME/Library/Developer/CoreSimulator/Devices"/*/data/tmp/* \
+            "$HOME/Library/Logs/CoreSimulator"/*; then
         simulator_has_targets=true
     fi
 
@@ -283,6 +366,13 @@ clean_xcode_tools() {
                 "Simulator temp files" \
                 ~/Library/Developer/CoreSimulator/Devices/*/data/tmp/* \
                 "Simulator temp files" || return 0
+            if [[ ${#simulator_device_leaves[@]} -gt 0 ]]; then
+                _app_cache_safe_clean_guarded \
+                    _simulator_device_leaf_delete_guard_allows \
+                    "Simulator device data" \
+                    "${simulator_device_leaves[@]}" \
+                    "Simulator device data" || return 0
+            fi
             _app_cache_safe_clean_guarded \
                 _simulator_app_cache_delete_guard_allows \
                 "CoreSimulator logs" \
