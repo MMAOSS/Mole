@@ -500,6 +500,84 @@ EOF
     [[ "$output" == *"PASS"* ]]
 }
 
+@test "clean_xcode_tools reports no simulator skip when every device leaf is whitelisted" {
+    local fixture_home="$HOME/simulator-leaves-whitelisted"
+    run env HOME="$fixture_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+devices="$HOME/Library/Developer/CoreSimulator/Devices"
+mkdir -p "$devices/OFF/data/Library/Caches/com.apple.Maps"
+/usr/bin/plutil -create xml1 "$devices/OFF/device.plist"
+/usr/bin/plutil -insert state -integer 1 "$devices/OFF/device.plist"
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+WHITELIST_PATTERNS=("$HOME/Library/Developer/CoreSimulator*")
+pgrep() { [[ "$*" == *Simulator* ]]; }
+safe_clean() { printf 'cleaned %s\n' "$@" >> "$HOME/clean-trace"; }
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+mole_defer_cleanup_family() { printf 'deferred %s\n' "$1" >> "$HOME/clean-trace"; }
+: > "$HOME/clean-trace"
+[[ -n "$(_simulator_device_leaf_targets)" ]] || { echo "NO_LEAF_LISTED"; exit 1; }
+clean_xcode_tools
+if grep -q "deferred Simulator" "$HOME/clean-trace"; then cat "$HOME/clean-trace"; exit 1; fi
+printf 'PASS\n'
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"PASS"* ]]
+}
+
+@test "simulator device leaves go through the real sink, skipping only a device that booted" {
+    local fixture_home="$HOME/simulator-leaves-real-sink"
+    run env HOME="$fixture_home" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" \
+        MOLE_TEST_NO_AUTH=1 /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+mkdir -p "$HOME"
+devices="$HOME/Library/Developer/CoreSimulator/Devices"
+source "$PROJECT_ROOT/bin/clean.sh"
+pgrep() { return 1; }
+# The host may have a simulator booted; the fixture devices are what count.
+_coresimulator_activity_state() { return 1; }
+make_devices() {
+    local device
+    for device in A_BOOTS B_OFF; do
+        mkdir -p "$devices/$device/data/Library/Caches/com.apple.Maps" \
+            "$devices/$device/data/private/var/MobileAsset/AssetsV2/font"
+        touch "$devices/$device/data/Library/Caches/com.apple.Maps/tile" \
+            "$devices/$device/data/private/var/MobileAsset/AssetsV2/font/asset"
+        rm -f "$devices/$device/device.plist"
+        /usr/bin/plutil -create xml1 "$devices/$device/device.plist"
+        /usr/bin/plutil -insert state -integer 1 "$devices/$device/device.plist"
+    done
+}
+# A_BOOTS is listed while shut down, then boots before its leaves are removed.
+_simulator_app_cache_delete_guard_allows() {
+    /usr/bin/plutil -replace state -integer 3 "$devices/A_BOOTS/device.plist"
+    return 0
+}
+for DRY_RUN in true false; do
+    export DRY_RUN
+    make_devices
+    clean_xcode_tools > "$HOME/out-$DRY_RUN.txt" 2>&1
+    for leaf in data/Library/Caches data/private/var/MobileAsset/AssetsV2; do
+        [[ -d "$devices/A_BOOTS/$leaf" ]] || { echo "BOOTED_LEAF_REMOVED:$DRY_RUN:$leaf"; exit 1; }
+        if [[ "$DRY_RUN" == false ]]; then
+            [[ ! -e "$devices/B_OFF/$leaf" ]] || { echo "OFF_LEAF_KEPT:$leaf"; cat "$HOME/out-$DRY_RUN.txt"; exit 1; }
+        else
+            [[ -d "$devices/B_OFF/$leaf" ]] || { echo "DRY_RUN_REMOVED:$leaf"; exit 1; }
+        fi
+    done
+    [[ -d "$devices/B_OFF/data" && -f "$devices/B_OFF/device.plist" ]] || { echo "DEVICE_DAMAGED:$DRY_RUN"; exit 1; }
+    grep -q "Simulator device data" "$HOME/out-$DRY_RUN.txt" || { echo "NO_ROW:$DRY_RUN"; cat "$HOME/out-$DRY_RUN.txt"; exit 1; }
+done
+printf 'PASS\n'
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"PASS"* ]]
+}
+
 @test "clean_xcode_tools does not duplicate unavailable simulator cleanup" {
     run grep -n "simctl" "$PROJECT_ROOT/lib/clean/app_caches.sh"
 

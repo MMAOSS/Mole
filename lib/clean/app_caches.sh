@@ -343,11 +343,13 @@ clean_xcode_tools() {
     while IFS= read -r simulator_leaf; do
         [[ -n "$simulator_leaf" ]] && simulator_device_leaves+=("$simulator_leaf")
     done < <(_simulator_device_leaf_targets)
-    if [[ ${#simulator_device_leaves[@]} -gt 0 ]] ||
-        mole_cleanup_targets_exist \
-            "$HOME/Library/Developer/CoreSimulator/Caches"/* \
-            "$HOME/Library/Developer/CoreSimulator/Devices"/*/data/tmp/* \
-            "$HOME/Library/Logs/CoreSimulator"/*; then
+    # The leaves pass the same protection and whitelist filter as the other
+    # targets, so a fully whitelisted simulator never reports a skip.
+    if mole_cleanup_targets_exist \
+        "${simulator_device_leaves[@]+"${simulator_device_leaves[@]}"}" \
+        "$HOME/Library/Developer/CoreSimulator/Caches"/* \
+        "$HOME/Library/Developer/CoreSimulator/Devices"/*/data/tmp/* \
+        "$HOME/Library/Logs/CoreSimulator"/*; then
         simulator_has_targets=true
     fi
 
