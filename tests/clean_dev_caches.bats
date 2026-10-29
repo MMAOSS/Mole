@@ -1146,6 +1146,51 @@ EOF
     [ "$status" -eq 0 ]
 }
 
+@test "pnpm dlx installs survive the cache sweep while pnpm metadata is still cleaned" {
+    # pnpm keeps `pnpm dlx` packages under ~/Library/Caches/pnpm/dlx, beside
+    # rebuildable registry metadata; the generic sweep used to take both.
+    run env HOME="$BATS_TEST_TMPDIR/home" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" \
+        MOLE_TEST_NO_AUTH=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+mkdir -p "$HOME"
+source "$PROJECT_ROOT/bin/clean.sh"
+load_mole_whitelist "$HOME"
+clean_pnpm_stores() { :; }
+clean_corepack_cache() { :; }
+bun() { return 1; }
+clean_trash() { :; }
+_clean_recent_items() { :; }
+_clean_mail_downloads() { :; }
+pnpm_cache="$HOME/Library/Caches/pnpm"
+for DRY_RUN in true false; do
+    export DRY_RUN
+    mkdir -p "$pnpm_cache/dlx/abc123/node_modules/tool" \
+        "$pnpm_cache/metadata-v1.3/registry.npmjs.org" \
+        "$HOME/Library/Caches/ordinary-app"
+    printf 'RESOURCE_OK' > "$pnpm_cache/dlx/abc123/node_modules/tool/index.js"
+    printf '{}' > "$pnpm_cache/metadata-v1.3/registry.npmjs.org/tool.json"
+    printf 'junk' > "$HOME/Library/Caches/ordinary-app/junk"
+    clean_user_essentials > /dev/null
+    clean_dev_npm > /dev/null
+    [[ "$(cat "$pnpm_cache/dlx/abc123/node_modules/tool/index.js")" == RESOURCE_OK ]] || {
+        echo "DLX_LOST:$DRY_RUN"
+        exit 1
+    }
+    if [[ "$DRY_RUN" == false ]]; then
+        [[ ! -e "$pnpm_cache/metadata-v1.3/registry.npmjs.org" ]] || { echo "METADATA_KEPT"; exit 1; }
+        # Positive control: the generic sweep really ran.
+        [[ ! -e "$HOME/Library/Caches/ordinary-app/junk" ]] || { echo "SWEEP_SKIPPED"; exit 1; }
+    else
+        [[ -f "$pnpm_cache/metadata-v1.3/registry.npmjs.org/tool.json" ]] || { echo "DRY_RUN_REMOVED"; exit 1; }
+    fi
+done
+echo PNPM_OK
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *PNPM_OK* ]] || { echo "$output"; return 1; }
+}
+
 @test "clean_dev_npm falls back to default cache when npm path is invalid" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail

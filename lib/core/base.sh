@@ -206,8 +206,10 @@ declare -a SAFETY_WHITELIST_PATTERNS=(
     # installs packages there and, by default, symlinks them into project
     # libraries, so removing it leaves those libraries dangling. Its entry is
     # spelled exactly like the old default row so saved files that still
-    # carry that line read it as this mandatory rule. Hard safety, so they
-    # merge unconditionally.
+    # carry that line read it as this mandatory rule. pnpm installs every
+    # `pnpm dlx` package under its cache dir, so a running command loses its
+    # modules when the sweep takes it, the shape of the npx loss in #1870.
+    # Hard safety, so they merge unconditionally.
     "$HOME/Library/Caches/com.apple.FontRegistry*"
     "$HOME/Library/Caches/com.apple.spotlight*"
     "$HOME/Library/Caches/com.apple.Spotlight*"
@@ -218,6 +220,7 @@ declare -a SAFETY_WHITELIST_PATTERNS=(
     "$HOME/Library/Caches/kitty"
     "$HOME/Library/Caches/pypoetry/virtualenvs*"
     "$HOME/Library/Caches/org.R-project.R/R/renv/*"
+    "$HOME/Library/Caches/pnpm/dlx*"
 )
 
 # Resolve the cache root used by GitHub CLI without following filesystem

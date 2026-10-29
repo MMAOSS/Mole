@@ -685,7 +685,7 @@ EOF
     done
 }
 
-@test "a custom whitelist still protects system caches, Kitty, Poetry virtualenvs and the renv cache" {
+@test "a custom whitelist still protects system caches, Kitty, Poetry virtualenvs, the renv cache and pnpm dlx" {
     # clean_user_essentials sweeps every child of ~/Library/Caches, and
     # load_mole_whitelist replaces DEFAULT_WHITELIST_PATTERNS wholesale once a
     # user saves one entry of their own. Anything that breaks macOS search,
@@ -699,6 +699,7 @@ EOF
         "$test_home/Library/Caches/kitty/graphics-cache" \
         "$test_home/Library/Caches/pypoetry/virtualenvs/proj-abc123" \
         "$test_home/Library/Caches/org.R-project.R/R/renv/cache/v5/pkg" \
+        "$test_home/Library/Caches/pnpm/dlx/abc123" \
         "$test_home/Library/Caches/com.example.unprotected"
     printf '%s\n' "$test_home/.cache/keep-my-own-thing/*" > "$test_home/.config/mole/whitelist"
 
@@ -716,6 +717,8 @@ for probe in \
     "$HOME/Library/Caches/pypoetry/virtualenvs/proj-abc123" \
     "$HOME/Library/Caches/org.R-project.R/R/renv/cache/v5/pkg" \
     "$HOME/Library/Caches/org.R-project.R" \
+    "$HOME/Library/Caches/pnpm/dlx/abc123" \
+    "$HOME/Library/Caches/pnpm" \
     "$HOME/Library/Caches/com.example.unprotected"; do
     if is_path_whitelisted "$probe"; then
         printf 'PROTECTED=%s\n' "${probe#"$HOME"/}"
@@ -746,6 +749,8 @@ EOF
     # The sweep removes top-level children of ~/Library/Caches, so the parent
     # is the path that actually has to hold.
     [[ "$output" == *"PROTECTED=Library/Caches/org.R-project.R"$'\n'* ]] || return 1
+    [[ "$output" == *"PROTECTED=Library/Caches/pnpm/dlx/abc123"* ]] || return 1
+    [[ "$output" == *"PROTECTED=Library/Caches/pnpm"$'\n'* ]] || return 1
     [[ "$output" == *"CUSTOM_KEPT"* ]] || return 1
     rm -rf "$test_home"
 }

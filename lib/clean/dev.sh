@@ -584,6 +584,9 @@ clean_dev_npm() {
     fi
 
     clean_pnpm_stores || return $?
+    # dlx is hard-safety whitelisted, which takes the whole pnpm root out of
+    # the generic ~/Library/Caches sweep; name the rebuildable metadata here.
+    safe_clean "$HOME/Library/Caches/pnpm"/metadata*/* "pnpm metadata cache"
     clean_corepack_cache || return $?
     local bun_default_cache="$HOME/.bun/install/cache"
     local bun_cache_path="$bun_default_cache"
